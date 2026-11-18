@@ -2,6 +2,8 @@ package datum
 
 import "sort"
 
+// Row is the external, name-keyed row shape used by HTTP requests and
+// results. It is not the internal storage form.
 type Row map[string]Value
 
 func Clone(row Row) Row {
@@ -14,7 +16,7 @@ func Clone(row Row) Row {
 	}
 	return c
 }
-func Keys(rows map[string]Row) []string {
+func Keys[T any](rows map[string]T) []string {
 	keys := make([]string, 0, len(rows))
 	for k := range rows {
 		keys = append(keys, k)

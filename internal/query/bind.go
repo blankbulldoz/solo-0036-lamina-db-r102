@@ -3,7 +3,6 @@ package query
 import (
 	"fmt"
 	"lamina/internal/catalog"
-	"lamina/internal/datum"
 )
 
 func Bind(r catalog.Relation, q Request) error {
@@ -59,47 +58,4 @@ func Bind(r catalog.Relation, q Request) error {
 		}
 	}
 	return nil
-}
-func Matches(row datum.Row, predicates []Predicate) bool {
-	for _, p := range predicates {
-		v := row[p.Column]
-		if p.Op == "is_null" {
-			if !v.Null() {
-				return false
-			}
-			continue
-		}
-		if p.Op == "not_null" {
-			if v.Null() {
-				return false
-			}
-			continue
-		}
-		if v.Null() || p.Value.Null() {
-			return false
-		}
-		n, err := v.Compare(p.Value)
-		if err != nil {
-			return false
-		}
-		pass := false
-		switch p.Op {
-		case "=":
-			pass = n == 0
-		case "!=":
-			pass = n != 0
-		case "<":
-			pass = n < 0
-		case ">":
-			pass = n > 0
-		case "<=":
-			pass = n <= 0
-		case ">=":
-			pass = n >= 0
-		}
-		if !pass {
-			return false
-		}
-	}
-	return true
 }

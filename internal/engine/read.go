@@ -42,7 +42,7 @@ func (d *DB) Query(q query.Request) (query.Result, error) {
 		q.ForceScan = true
 	}
 	plan, keys := query.Choose(d.catalog, d.indexes, q, at, len(d.store.Tables[q.Relation]))
-	rows := map[string]datum.Row{}
+	rows := map[string]datum.Tuple{}
 	if plan.Access == "index" {
 		for _, key := range keys {
 			if row, exists := d.store.Read(q.Relation, key, at); exists {

@@ -10,19 +10,30 @@ import (
 func (d *DB) unique(table string, writes map[string]map[string]staged) error {
 	rows := d.store.Scan(table, d.sequence)
 	overlay(rows, writes, table)
+	relation, err := d.catalog.Relation(table)
+	if err != nil {
+		return invalid(err)
+	}
 	for _, i := range d.catalog.Indexes {
 		if i.Relation == table && i.Unique {
-			if err := checkUnique(rows, i); err != nil {
+			pos, ok := relation.Position(i.Column)
+			if !ok {
+				return fault("invalid", "unique index %s references unknown column", i.Name)
+			}
+			if err := checkUnique(rows, i, pos); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func checkUnique(rows map[string]datum.Row, i catalog.Index) error {
+func checkUnique(rows map[string]datum.Tuple, i catalog.Index, pos int) error {
 	values := map[string]string{}
 	for key, row := range rows {
-		v := row[i.Column]
+		if pos >= len(row) {
+			continue
+		}
+		v := row[pos]
 		if v.Null() {
 			continue
 		}
@@ -61,8 +72,10 @@ func (d *DB) CreateIndex(i catalog.Index) (catalog.Index, error) {
 	if err := d.catalog.CheckIndex(i); err != nil {
 		return i, invalid(err)
 	}
+	relation, _ := d.catalog.Relation(i.Relation)
+	pos, _ := relation.Position(i.Column)
 	if i.Unique {
-		if err := checkUnique(d.store.Scan(i.Relation, d.sequence), i); err != nil {
+		if err := checkUnique(d.store.Scan(i.Relation, d.sequence), i, pos); err != nil {
 			return i, err
 		}
 	}

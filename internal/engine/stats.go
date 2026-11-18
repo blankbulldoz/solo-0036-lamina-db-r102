@@ -1,6 +1,13 @@
 package engine
 
-import "sort"
+import (
+	"lamina/internal/snapshot"
+	"sort"
+)
+
+// RowLayout names the durable row representation. "positional" means every
+// stored tuple is bound to the relation's catalog column order.
+const RowLayout = "positional"
 
 type Stats struct {
 	Sequence       uint64         `json:"sequence"`
@@ -8,6 +15,10 @@ type Stats struct {
 	Active         []Transaction  `json:"active"`
 	Keys           int            `json:"keys"`
 	Versions       int            `json:"versions"`
+	ValueSlots     int            `json:"value_slots"`
+	RowLayout      string         `json:"row_layout"`
+	Format         int            `json:"store_format"`
+	UpgradedOnOpen bool           `json:"upgraded_on_open"`
 	IndexEntries   map[string]int `json:"index_entries"`
 	JournalRecords int            `json:"journal_records"`
 	HistoryBase    uint64         `json:"history_base"`
@@ -24,7 +35,7 @@ func (d *DB) Stats() (Stats, error) {
 		return Stats{}, err
 	}
 	keys, versions := d.store.Count()
-	s := Stats{Sequence: d.sequence, Horizon: d.horizon, Keys: keys, Versions: versions, Active: []Transaction{}, IndexEntries: map[string]int{}, JournalRecords: len(d.wal.Records), HistoryBase: d.wal.Base, RecoveredTail: d.wal.RecoveredTail, Commits: d.commits, Conflicts: d.conflicts, Queries: d.queries}
+	s := Stats{Sequence: d.sequence, Horizon: d.horizon, Keys: keys, Versions: versions, ValueSlots: d.store.Slots(), RowLayout: RowLayout, Format: snapshot.FormatTuples, UpgradedOnOpen: d.migrated, Active: []Transaction{}, IndexEntries: map[string]int{}, JournalRecords: len(d.wal.Records), HistoryBase: d.wal.Base, RecoveredTail: d.wal.RecoveredTail, Commits: d.commits, Conflicts: d.conflicts, Queries: d.queries}
 	for _, tx := range d.transactions {
 		copy := *tx
 		copy.writes = nil

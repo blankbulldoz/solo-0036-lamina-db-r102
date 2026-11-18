@@ -26,14 +26,18 @@ type DB struct {
 	commits      uint64
 	conflicts    uint64
 	queries      uint64
+	migrated     bool
 }
 
+// Open validates the whole directory before publishing it. A directory whose
+// rows cannot be explained by its catalog is rejected; nothing is rewritten
+// until replay and constraint checks have succeeded in memory.
 func Open(dir string) (*DB, error) {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
-	image, err := snapshot.Read(filepath.Join(absolute, "checkpoint.lmi"))
+	image, imageLegacy, err := snapshot.Read(filepath.Join(absolute, "checkpoint.lmi"))
 	missing := os.IsNotExist(err)
 	if err != nil && !missing {
 		return nil, fmt.Errorf("checkpoint: %w", err)
@@ -59,11 +63,22 @@ func Open(dir string) (*DB, error) {
 		w.Close()
 		return nil, fmt.Errorf("checkpoint ahead of journal")
 	}
-	for _, r := range w.Records {
+	journalLegacy := false
+	for i := range w.Records {
+		r := &w.Records[i]
+		if r.Legacy() || r.Format != journal.CurrentFormat {
+			journalLegacy = true
+		}
+		if r.Legacy() {
+			if err = r.ConvertLegacy(d.catalog); err != nil {
+				w.Close()
+				return nil, fmt.Errorf("journal layout at sequence %d: %w", r.Sequence, err)
+			}
+		}
 		if r.Sequence <= d.sequence {
 			continue
 		}
-		if err = d.apply(r); err != nil {
+		if err = d.apply(*r); err != nil {
 			w.Close()
 			return nil, fmt.Errorf("replay sequence %d: %w", r.Sequence, err)
 		}
@@ -75,7 +90,34 @@ func Open(dir string) (*DB, error) {
 			return nil, fmt.Errorf("recovered constraints: %w", err)
 		}
 	}
+	if imageLegacy || journalLegacy {
+		d.migrated = true
+		// Any legacy frame on disk is rewritten, even if all of them converted
+		// in memory, so the next open performs no conversion and the published
+		// directory has a single generation.
+		if err = d.upgrade(imageLegacy, journalLegacy); err != nil {
+			w.Close()
+			return nil, fmt.Errorf("layout upgrade: %w", err)
+		}
+	}
 	return d, nil
+}
+
+// upgrade installs converted materials in an order that fails closed. The
+// checkpoint replacement is atomic and precedes the journal replacement; both
+// refuse to expose a half-written file. An interruption leaves either the
+// pristine old pair or a new checkpoint with an old, still readable journal.
+func (d *DB) upgrade(rewriteCheckpoint, rewriteJournal bool) error {
+	if rewriteCheckpoint {
+		image := snapshot.Image{Format: snapshot.FormatTuples, Sequence: d.sequence, Horizon: d.horizon, Catalog: d.catalog.Clone(), Store: d.store}
+		if err := snapshot.Write(filepath.Join(d.dir, "checkpoint.lmi"), image); err != nil {
+			return err
+		}
+	}
+	if rewriteJournal {
+		return d.wal.Rewrite()
+	}
+	return nil
 }
 func (d *DB) usable() error {
 	if d.closed {
@@ -98,7 +140,7 @@ func (d *DB) Close() error {
 }
 func (d *DB) publish(r journal.Record) error {
 	r.Sequence = d.sequence + 1
-	r.Format = 1
+	r.Format = journal.CurrentFormat
 	if err := d.wal.Append(r); err != nil {
 		return fault("unavailable", "durable commit failed: %s", err)
 	}

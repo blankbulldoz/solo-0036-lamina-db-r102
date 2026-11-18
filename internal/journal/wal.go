@@ -15,6 +15,7 @@ const MaxFrame = 16 << 20
 
 type WAL struct {
 	Base          uint64
+	dir           string
 	file          *os.File
 	lock          *os.File
 	Records       []Record
@@ -39,7 +40,7 @@ func Open(dir string, base uint64) (*WAL, error) {
 		lock.Close()
 		return nil, err
 	}
-	w := &WAL{file: f, lock: lock, Base: base}
+	w := &WAL{dir: dir, file: f, lock: lock, Base: base}
 	info, err := f.Stat()
 	if err != nil {
 		w.Close()
@@ -127,7 +128,7 @@ func (w *WAL) recover() error {
 		if err = json.Unmarshal(payload, &r); err != nil {
 			return fmt.Errorf("journal json at %d: %w", offset, err)
 		}
-		if r.Format != 1 || r.Sequence != last+1 {
+		if (r.Format != 1 && r.Format != CurrentFormat) || r.Sequence != last+1 {
 			return fmt.Errorf("journal sequence or format mismatch at %d", offset)
 		}
 		w.Records = append(w.Records, r)
@@ -152,7 +153,7 @@ func (w *WAL) Append(r Record) error {
 	if r.Sequence != w.Base+uint64(len(w.Records))+1 {
 		return fmt.Errorf("noncontiguous journal sequence")
 	}
-	r.Format = 1
+	r.Format = CurrentFormat
 	payload, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -178,5 +179,87 @@ func (w *WAL) Append(r Record) error {
 func (w *WAL) Close() error {
 	err := w.file.Close()
 	w.lock.Close()
+	return err
+}
+
+// Rewrite atomically replaces the journal with the same sequences and base in
+// the current format. Records must already be converted. The replacement is
+// only installed after every frame has been encoded and synced, so an
+// interrupted upgrade leaves the original journal readable by both versions.
+func (w *WAL) Rewrite() error {
+	if w.Poisoned {
+		return fmt.Errorf("journal is unavailable; restart required")
+	}
+	temp, err := os.CreateTemp(w.dir, ".lamina-journal-")
+	if err != nil {
+		return err
+	}
+	path := temp.Name()
+	defer os.Remove(path)
+	if err = temp.Chmod(0600); err != nil {
+		temp.Close()
+		return err
+	}
+	header := make([]byte, 16)
+	copy(header[:4], "LMW1")
+	binary.BigEndian.PutUint64(header[4:12], w.Base)
+	binary.BigEndian.PutUint32(header[12:], crc32.ChecksumIEEE(header[:12]))
+	if _, err = temp.Write(header); err != nil {
+		temp.Close()
+		return err
+	}
+	for i := range w.Records {
+		r := w.Records[i]
+		if r.Legacy() {
+			temp.Close()
+			return fmt.Errorf("journal sequence %d is not converted", r.Sequence)
+		}
+		r.Format = CurrentFormat
+		payload, err := json.Marshal(r)
+		if err != nil {
+			temp.Close()
+			return err
+		}
+		if len(payload) > MaxFrame {
+			temp.Close()
+			return fmt.Errorf("journal frame exceeds limit during upgrade")
+		}
+		frame := make([]byte, 8+len(payload))
+		binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
+		binary.BigEndian.PutUint32(frame[4:8], crc32.ChecksumIEEE(payload))
+		copy(frame[8:], payload)
+		if _, err = temp.Write(frame); err != nil {
+			temp.Close()
+			return err
+		}
+		w.Records[i] = r
+	}
+	if err = temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(path, filepath.Join(w.dir, "journal.lmw")); err != nil {
+		return err
+	}
+	directory, err := os.Open(w.dir)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	if err = w.file.Close(); err != nil {
+		return err
+	}
+	w.file, err = os.OpenFile(filepath.Join(w.dir, "journal.lmw"), os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = w.file.Seek(0, io.SeekEnd)
 	return err
 }

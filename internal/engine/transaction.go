@@ -72,11 +72,14 @@ func (d *DB) Put(id, table string, row datum.Row, insertOnly bool) error {
 	if r.Created > tx.Snapshot {
 		return fault("conflict", "relation outside transaction catalog snapshot")
 	}
-	normalized, err := r.Normalize(row)
+	encoded, err := r.Encode(row)
 	if err != nil {
 		return invalid(err)
 	}
-	key := r.Key(normalized)
+	key, err := r.KeyTuple(encoded)
+	if err != nil {
+		return invalid(err)
+	}
 	rows := d.store.Scan(table, tx.Snapshot)
 	overlay(rows, tx.writes, table)
 	if insertOnly {
@@ -90,7 +93,7 @@ func (d *DB) Put(id, table string, row datum.Row, insertOnly bool) error {
 	if err = tx.reserve(table, key); err != nil {
 		return err
 	}
-	tx.writes[table][key] = staged{Mutation: versions.Mutation{Relation: table, Key: key, Row: normalized}, InsertOnly: insertOnly}
+	tx.writes[table][key] = staged{Mutation: versions.Mutation{Relation: table, Key: key, Row: encoded}, InsertOnly: insertOnly}
 	return nil
 }
 func (tx *Transaction) reserve(table, key string) error {

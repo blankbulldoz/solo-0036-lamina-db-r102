@@ -59,6 +59,89 @@ func (r Relation) Column(name string) (Column, bool) {
 	}
 	return Column{}, false
 }
+func (r Relation) Position(name string) (int, bool) {
+	for i, c := range r.Columns {
+		if c.Name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+func (r Relation) Layout() []string {
+	out := make([]string, len(r.Columns))
+	for i, c := range r.Columns {
+		out[i] = c.Name
+	}
+	return out
+}
+
+// Encode validates an external name-keyed row once at the write boundary and
+// returns the positional tuple that is stored for every version. The column
+// order is the durable catalog order, never the request's key order.
+func (r Relation) Encode(row datum.Row) (datum.Tuple, error) {
+	normalized, err := r.Normalize(row)
+	if err != nil {
+		return nil, err
+	}
+	return r.Tuple(normalized), nil
+}
+
+// Tuple reorders a normalized row into catalog column positions.
+func (r Relation) Tuple(row datum.Row) datum.Tuple {
+	out := make(datum.Tuple, len(r.Columns))
+	for i, c := range r.Columns {
+		out[i] = row[c.Name]
+	}
+	return out
+}
+
+// Decode reproduces the public row shape from a stored tuple.
+func (r Relation) Decode(t datum.Tuple) datum.Row {
+	out := make(datum.Row, len(r.Columns))
+	for i, c := range r.Columns {
+		v := datum.Value{Kind: "null"}
+		if i < len(t) {
+			v = t[i]
+		}
+		out[c.Name] = v
+	}
+	return out
+}
+
+// ValidateTuple checks that every slot has the catalog's column meaning.
+func (r Relation) ValidateTuple(t datum.Tuple) error {
+	if len(t) != len(r.Columns) {
+		return fmt.Errorf("tuple width %d does not match relation %s layout %d", len(t), r.Name, len(r.Columns))
+	}
+	for i, c := range r.Columns {
+		v := t[i]
+		if v.Null() {
+			if !c.Nullable {
+				return fmt.Errorf("column %s cannot be null", c.Name)
+			}
+			continue
+		}
+		if v.Kind != c.Type {
+			return fmt.Errorf("column %s requires %s", c.Name, c.Type)
+		}
+		if v.Kind == "text" && len(v.Text) > 65536 {
+			return fmt.Errorf("text exceeds 64KiB")
+		}
+	}
+	return nil
+}
+
+// KeyTuple derives the canonical primary key from the primary column position.
+func (r Relation) KeyTuple(t datum.Tuple) (string, error) {
+	pos, ok := r.Position(r.Primary)
+	if !ok || pos >= len(t) {
+		return "", fmt.Errorf("primary column does not exist")
+	}
+	if t[pos].Null() {
+		return "", fmt.Errorf("primary cannot be null")
+	}
+	return t[pos].Key(), nil
+}
 func (r Relation) Normalize(row datum.Row) (datum.Row, error) {
 	for k := range row {
 		if _, ok := r.Column(k); !ok {

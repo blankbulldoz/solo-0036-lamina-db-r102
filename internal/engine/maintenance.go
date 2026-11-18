@@ -11,7 +11,7 @@ import (
 )
 
 func (d *DB) image() snapshot.Image {
-	return snapshot.Image{Format: 1, Sequence: d.sequence, Horizon: d.horizon, Catalog: d.catalog.Clone(), Store: d.store.Clone()}
+	return snapshot.Image{Format: snapshot.FormatTuples, Sequence: d.sequence, Horizon: d.horizon, Catalog: d.catalog.Clone(), Store: d.store.Clone()}
 }
 func (d *DB) Checkpoint() (uint64, error) {
 	d.mu.Lock()
@@ -39,8 +39,12 @@ func (d *DB) Backup() ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Restore accepts either envelope generation. Legacy name-keyed payloads are
+// validated and converted against their own catalog; the installed directory
+// always carries the positional format and a matching journal base.
 func Restore(dir string, data []byte) error {
-	image, err := snapshot.Decode(data)
+	image, _, err := snapshot.Decode(data)
 	if err != nil {
 		return err
 	}

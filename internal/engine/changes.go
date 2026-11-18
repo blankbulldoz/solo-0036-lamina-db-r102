@@ -3,17 +3,17 @@ package engine
 import "lamina/internal/journal"
 
 type ChangePage struct {
-	Records     []journal.Record `json:"records"`
-	Cursor      uint64           `json:"cursor"`
-	Head        uint64           `json:"head"`
-	HistoryBase uint64           `json:"history_base"`
-	More        bool             `json:"more"`
+	Records     []journal.PublicRecord `json:"records"`
+	Cursor      uint64                 `json:"cursor"`
+	Head        uint64                 `json:"head"`
+	HistoryBase uint64                 `json:"history_base"`
+	More        bool                   `json:"more"`
 }
 
 func (d *DB) Changes(after uint64, limit int) (ChangePage, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	out := ChangePage{Records: []journal.Record{}, Cursor: after, Head: d.sequence, HistoryBase: d.wal.Base}
+	out := ChangePage{Records: []journal.PublicRecord{}, Cursor: after, Head: d.sequence, HistoryBase: d.wal.Base}
 	if err := d.usable(); err != nil {
 		return out, err
 	}
@@ -31,7 +31,7 @@ func (d *DB) Changes(after uint64, limit int) (ChangePage, error) {
 			out.More = true
 			break
 		}
-		out.Records = append(out.Records, r)
+		out.Records = append(out.Records, r.Public(d.catalog))
 		out.Cursor = r.Sequence
 	}
 	return out, nil
